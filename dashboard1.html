@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html>
+<head>
+    <title>The Network Room - Deep Packet Inspection</title>
+    <style>
+        body { background-color: #0d1117; margin: 0; font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif; overflow: hidden; height: 100vh; color: #c9d1d9; }
+        h2 { text-align: center; color: #58a6ff; padding-top: 20px; font-weight: 500; letter-spacing: 1.5px;}
+        
+        #server-status {
+            position: absolute; top: 25px; left: 30px; background-color: #161b22; border: 1px solid #30363d;
+            border-radius: 6px; padding: 10px 15px; font-family: monospace; font-size: 14px; font-weight: bold;
+            color: #ff7b72; box-shadow: 0px 5px 15px rgba(0,0,0,0.5); z-index: 100; transition: 0.3s;
+        }
+
+        .legend-panel { position: absolute; top: 25px; right: 30px; background-color: #161b22; border: 1px solid #30363d; border-radius: 8px; padding: 15px 20px; box-shadow: 0px 10px 25px rgba(0,0,0,0.8); z-index: 100; }
+        .legend-panel h3 { margin: 0 0 15px 0; font-size: 13px; color: #8b949e; text-transform: uppercase; letter-spacing: 1px;}
+        .legend-item { display: flex; align-items: center; margin-bottom: 12px; font-size: 13px; font-weight: bold; font-family: monospace;}
+        .legend-box { width: 24px; height: 12px; border-radius: 3px; margin-right: 15px; background: linear-gradient(135deg, #8b949e, #484f58); border: 1px solid;}
+        .l-tcp { border-color: #58a6ff; box-shadow: 0 0 10px rgba(88, 166, 255, 0.5); }
+        .l-udp { border-color: #ff7b72; box-shadow: 0 0 10px rgba(255, 123, 114, 0.5); }
+        .l-icmp { border-color: #3fb950; box-shadow: 0 0 10px rgba(63, 185, 80, 0.5); }
+        
+        .flyover-container { position: absolute; top: 40%; width: 100%; height: 300px; }
+        .bridge-deck { position: absolute; width: 100%; height: 140px; background: linear-gradient(to bottom, #2b3036 0%, #161b22 50%, #2b3036 100%); border-top: 5px solid #484f58; border-bottom: 18px solid #010409; box-shadow: 0px 30px 50px rgba(0,0,0,0.9); z-index: 10; }
+        .bridge-deck::after { content: ''; position: absolute; top: 50%; width: 100%; height: 3px; background-image: linear-gradient(to right, #d2a8ff 50%, transparent 50%); background-size: 80px 100%; transform: translateY(-50%); opacity: 0.4; }
+        
+        .vehicle { position: absolute; width: 65px; height: 22px; border-radius: 4px; z-index: 20; cursor: pointer; background: linear-gradient(135deg, #8b949e, #484f58); border: 1px solid #c9d1d9; box-shadow: 0px 5px 10px rgba(0,0,0,0.6); }
+        .vehicle.tcp { border-color: #58a6ff; box-shadow: 0 0 15px rgba(88, 166, 255, 0.5); }
+        .vehicle.udp { border-color: #ff7b72; box-shadow: 0 0 15px rgba(255, 123, 114, 0.5); }
+        .vehicle.icmp { border-color: #3fb950; box-shadow: 0 0 15px rgba(63, 185, 80, 0.5); }
+        .vehicle:hover { animation-play-state: paused !important; border-color: #ffffff; box-shadow: 0 0 25px #ffffff; z-index: 50; }
+        
+        .tooltip { visibility: hidden; position: absolute; bottom: 40px; left: 50%; transform: translateX(-50%); background-color: #0d1117; color: #c9d1d9; text-align: left; padding: 0; border-radius: 6px; font-size: 12px; font-family: monospace; white-space: nowrap; box-shadow: 0px 10px 25px rgba(0,0,0,0.9); border: 1px solid #30363d; opacity: 0; transition: opacity 0.2s; z-index: 30; width: 280px; overflow: hidden; }
+        .vehicle:hover .tooltip { visibility: visible; opacity: 1; }
+        .ws-header { background-color: #161b22; padding: 8px 12px; font-weight: bold; border-bottom: 1px solid #30363d;}
+        .ws-section { padding: 6px 12px; border-bottom: 1px dashed #30363d; line-height: 1.5; }
+        .ws-section:last-child { border-bottom: none; }
+        .ws-label { color: #8b949e; display: inline-block; width: 60px;}
+        
+        @keyframes driveForward { 0% { left: -150px; } 100% { left: 100vw; } }
+        @keyframes driveReverse { 0% { left: 100vw; } 100% { left: -150px; } }
+    </style>
+</head>
+<body>
+    <h2>Live Packet Inspection Dashboard</h2>
+    
+    <div id="server-status">🔴 WAITING FOR SERVER...</div>
+
+    <div class="legend-panel">
+        <h3>Traffic Legend</h3>
+        <div class="legend-item"><div class="legend-box l-tcp"></div> <span style="color:#58a6ff;">TCP</span></div>
+        <div class="legend-item"><div class="legend-box l-udp"></div> <span style="color:#ff7b72;">UDP</span></div>
+        <div class="legend-item"><div class="legend-box l-icmp"></div> <span style="color:#3fb950;">ICMP / Other</span></div>
+    </div>
+    
+    <div class="flyover-container"><div class="bridge-deck" id="road"></div></div>
+
+    <script>
+        const statusBox = document.getElementById("server-status");
+
+        // ⚠️ THE MAGIC POLLER: Prathi 1 second ki data theeskosthundi
+        setInterval(async () => {
+            try {
+                let response = await fetch("http://localhost:8765/packets");
+                let packets = await response.json();
+                
+                statusBox.innerHTML = "🟢 API SYNCED [ " + packets.length + " Packets ]";
+                statusBox.style.color = "#3fb950";
+                statusBox.style.borderColor = "#3fb950";
+
+                // Vachina prathi packet ki oka car create chestham
+                packets.forEach((packet, index) => {
+                    // Delay each car slightly so they don't overlap
+                    setTimeout(() => {
+                        let carDiv = document.createElement("div");
+                        carDiv.className = "vehicle";
+                        
+                        let pColor = "#3fb950"; 
+                        if (packet.protocol === "TCP") { carDiv.classList.add("tcp"); pColor = "#58a6ff"; } 
+                        else if (packet.protocol === "UDP") { carDiv.classList.add("udp"); pColor = "#ff7b72"; } 
+                        else { carDiv.classList.add("icmp"); pColor = "#3fb950"; }
+                        
+                        let speed = Math.floor(Math.random() * 8) + 12; 
+                        let isReverse = Math.random() > 0.5; 
+
+                        if (isReverse) {
+                            carDiv.style.top = "25px";
+                            carDiv.style.animation = `driveReverse ${speed}s linear forwards`;
+                        } else {
+                            carDiv.style.top = "95px";
+                            carDiv.style.animation = `driveForward ${speed}s linear forwards`;
+                        }
+
+                        let tooltipHTML = `
+                            <div class="tooltip">
+                                <div class="ws-header" style="color:${pColor}; border-bottom: 1px solid ${pColor};">
+                                    [ ${packet.protocol} ] - Frame Len: ${packet.length} bytes
+                                </div>
+                                <div class="ws-section">
+                                    <strong>Ethernet II (Layer 2)</strong><br>
+                                    <span class="ws-label">Src MAC:</span> ${packet.src_mac}<br>
+                                    <span class="ws-label">Dst MAC:</span> ${packet.dst_mac}
+                                </div>
+                                <div class="ws-section">
+                                    <strong>IPv4 (Layer 3)</strong><br>
+                                    <span class="ws-label">Src IP:</span> ${packet.src_ip}<br>
+                                    <span class="ws-label">Dst IP:</span> ${packet.dst_ip}<br>
+                                    <span class="ws-label">TTL:</span> ${packet.ttl}
+                                </div>
+                                <div class="ws-section">
+                                    <strong>Transport (Layer 4)</strong><br>
+                                    <span class="ws-label">Src Port:</span> ${packet.src_port}<br>
+                                    <span class="ws-label">Dst Port:</span> ${packet.dst_port}
+                                </div>
+                            </div>
+                        `;
+                                           
+                        carDiv.innerHTML = tooltipHTML;
+                        document.getElementById("road").appendChild(carDiv);
+                        setTimeout(() => { carDiv.remove(); }, speed * 1000); 
+                    }, index * 400); // 400ms delay between cars
+                });
+
+            } catch (err) {
+                statusBox.innerHTML = "🔴 CONNECTION FAILED";
+                statusBox.style.color = "#ff7b72";
+                statusBox.style.borderColor = "#ff7b72";
+            }
+        }, 1000); // Poll every 1 second
+    </script>
+</body>
+</html>
